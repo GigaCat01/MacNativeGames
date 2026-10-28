@@ -49,10 +49,10 @@ def main():
  allowed={0x2db204,0x2db208,0x2db22c,0x2db360,0x2db36c,0x2db340,0x2db34c,0x3e5658,0x2daa54,0x2daa58,0x2daa6c,0x2daa70,0x2daa74,0x2daa78,
           0x246eac,0x345904,0x24944c,0x28bc98,0x628c74,0xb43460,0x1ff04f4,0x253fbb0,0x562a64,
           0x585e48,0x585e50,0x585e54,0x585e60,
-          0x0a7ac4,0x0a7ac8,0x0a7acc,0x0a7ad0,0x95dd24,0x95dd28,0x6155e4,0x615660}|{stub+4*i for i in range(4)}|{stub+48+4*i for i in range(32)}|{stub+176+4*i for i in range(19)}|{stub+256+4*i for i in range(5)}|{stub+928+4*i for i in range(20)}
+          0x0a7ac4,0x0a7ac8,0x0a7acc,0x0a7ad0,0x95dd24,0x95dd28,0x6155e4,0x615660}|{stub+4*i for i in range(4)}|{stub+48+4*i for i in range(32)}|{stub+176+4*i for i in range(19)}|{stub+256+4*i for i in range(5)}|{stub+928+4*i for i in range(24)}
  # 0x585e48..0x585e60: patch_render_res, the scene size read from the data page (on by default since e8edbcd)
  assert set(changes)==allowed,[hex(o) for o in sorted(set(changes)^allowed)]
- assert stub+928+20*4<=layout['RO_OFF'],'fade veneers overlap read-only data'
+ assert stub+928+24*4<=layout['RO_OFF'],'fade veneers overlap read-only data'
  def bits(value):return struct.unpack('<I',struct.pack('<f',value))[0]
  def execute(seconds,apply,half=False,call=0x3e5720,nominal_fps=60):
   mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
@@ -169,37 +169,38 @@ def main():
  assert abs(bounce_check(30,.25,False)-bounce_check(30,.25))<1e-3,'at 30 Hz the patched check must equal the original'
  # LOD and pre-actor fade counters (#466, #556, #538):
  # At high FPS (ratio < 1/2.1 ≈ 0.476), trunc(2.1 * ratio) becomes zero, freezing opacity.
- # The veneer clamps the per-frame increment to max(trunc(2.1 * ratio), 1).
- def fade_check_site1(hz, initial=5, apply=True):
+ # The veneer clamps the per-frame increment to max(trunc(2.1 * ratio), 1) when the scaled input
+ # is finite and positive. Non-positive inputs (+0.0, -0.0, negatives) and NaNs retain their original 0.
+ def fade_check_site1(hz=None, initial=5, apply=True, direct_ratio=None):
   mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
   mu.mem_map(0x10000000,0x10000);mu.reg_write(UC_ARM64_REG_X9,0x10000000)
   mu.mem_write(0x10000000+0x9e,bytes([initial]))
-  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S1,bits(ratio))
+  ratio=direct_ratio if direct_ratio is not None else 30/hz;mu.reg_write(UC_ARM64_REG_S1,bits(ratio))
   mu.reg_write(UC_ARM64_REG_X8,0x2d02000)
   mu.emu_start(0x0a7abc,0x0a7ad4,count=30)
   assert mu.reg_read(UC_ARM64_REG_PC)==0x0a7ad4,'fade site 1 veneer did not return to 0x0a7ad4'
   return mu.mem_read(0x10000000+0x9e,1)[0]-initial
 
- def fade_check_site2(hz, initial=5, apply=True):
+ def fade_check_site2(hz=None, initial=5, apply=True, direct_ratio=None):
   mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
   mu.mem_map(0x10000000,0x10000);mu.reg_write(UC_ARM64_REG_X20,0x10000000)
   mu.mem_write(0x10000000+0x9e,bytes([initial]));mu.reg_write(UC_ARM64_REG_W9,initial)
-  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio))
+  ratio=direct_ratio if direct_ratio is not None else 30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio))
   mu.reg_write(UC_ARM64_REG_X8,0x2d02000)
   mu.emu_start(0x95dd1c,0x95dd30,count=30)
   assert mu.reg_read(UC_ARM64_REG_PC)==0x95dd30,'fade site 2 veneer did not return to 0x95dd30'
   return mu.mem_read(0x10000000+0x9e,1)[0]-initial
 
- def fade_check_site3(hz, apply=True):
+ def fade_check_site3(hz=None, apply=True, direct_ratio=None):
   mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
-  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio));mu.reg_write(UC_ARM64_REG_S0,bits(2.1))
+  ratio=direct_ratio if direct_ratio is not None else 30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio));mu.reg_write(UC_ARM64_REG_S0,bits(2.1))
   mu.emu_start(0x6155e0,0x6155e8,count=20)
   assert mu.reg_read(UC_ARM64_REG_PC)==0x6155e8,'fade site 3 veneer did not return to 0x6155e8'
   return mu.reg_read(UC_ARM64_REG_W10)
 
- def fade_check_site4(hz, apply=True):
+ def fade_check_site4(hz=None, apply=True, direct_ratio=None):
   mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
-  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio));mu.reg_write(UC_ARM64_REG_S0,bits(2.1))
+  ratio=direct_ratio if direct_ratio is not None else 30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio));mu.reg_write(UC_ARM64_REG_S0,bits(2.1))
   mu.emu_start(0x61565c,0x615664,count=20)
   assert mu.reg_read(UC_ARM64_REG_PC)==0x615664,'fade site 4 veneer did not return to 0x615664'
   return mu.reg_read(UC_ARM64_REG_W10)
@@ -214,6 +215,11 @@ def main():
  assert fade_check_site2(120,apply=False)==0,'negative control: unpatched site 2 stalls at 120 FPS'
  assert fade_check_site3(120,apply=False)==0,'negative control: unpatched site 3 stalls at 120 FPS'
  assert fade_check_site4(120,apply=False)==0,'negative control: unpatched site 4 stalls at 120 FPS'
+ # Edge cases: +0.0, -0.0, small negatives, and NaNs must NOT be bumped to 1
+ for zero_ratio in (0.0, -0.0, -0.525/2.1, float('nan')):
+  for site, check in enumerate((fade_check_site1, fade_check_site2, fade_check_site3, fade_check_site4), 1):
+   got = check(direct_ratio=zero_ratio)
+   assert got == 0, f'site {site} non-positive/NaN ratio {zero_ratio} returned {got}, expected 0'
  report=dict(status='pass',version='v143',scope='production ARM64 timing, secondary cloth/hair clock and LOD/actor fade veneers; original clock arithmetic, half-step selector, slow motion, zero factor, both inline/delegated actor paths, ordinary clock and ABI preservation',cases=cases,realtime_cases=realtime_cases,negative_control=negative,cloth_cases=cloth_cases,cloth_negative_control=cloth_negative,cloth_instruction_guard_negative_controls=4,bounce_cases=bounce_cases,fade_cases=fade_cases,veneer_offset=hex(stub),changed_original_words=len(changes),sources={p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ('runtime/game_patches_v143.c','scripts/v143_timing_fixture.c','scripts/verify_v143_timing.py')})
  (out/'realtime-validation.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(dict(status='pass',cases=len(cases),realtime_ratios=[round(c['ratio'],6) for c in realtime_cases],cloth_cases=len(cloth_cases),cloth_negative_control=cloth_negative,bounce_cases=len(bounce_cases),fade_cases=len(fade_cases),changed_original_words=len(changes))))
 if __name__=='__main__':main()
